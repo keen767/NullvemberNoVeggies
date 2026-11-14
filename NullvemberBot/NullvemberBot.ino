@@ -63,7 +63,7 @@ const bool          BEEP_ON_STATE     = true; // short beep at every stage chang
 const uint8_t       LED_BRIGHTNESS    = 40;   // 0-255
 
 // ---- Wall following (right wall, nudge steering) -------------------------
-const float WALL_TARGET_CM    = 15.0;  // desired distance to the right wall
+const float WALL_TARGET_CM    = 12.0;  // desired distance to the right wall
 const float WALL_TOLERANCE_CM = 2.0;   // dead-band either side of the target
 const float WALL_NULL_CM      = 25.0;  // further than this = null reading, drive straight
 const int   BASE_SPEED        = 150;   // cruising PWM (0-255)          calibrate
@@ -85,7 +85,7 @@ const unsigned long TURN90_MS  = 550;   // time for a 90° left pivot        cal
 
 // ---- U-turn: F1 -> L90 -> F2 -> L90 -> F3 -------------------------------------
 const int   UT_SPEED       = 150;   // PWM for the forward stretches
-const float MS_PER_CM      = 35.0;  // ms to travel 1 cm at UT_SPEED      calibrate (mode 6)
+const float MS_PER_CM      = 200.0;  // ms to travel 1 cm at UT_SPEED      calibrate (mode 6)
 const float UT_FWD1_CM     = 30.0;  // past the end of the divider (nudge off corridor A wall @15 cm)
 const float UT_FWD2_CM     = 35.0;  // across the gap (nudge: hold starting distance)
 const float UT_FWD3_MAX_CM = 30.0;  // up corridor B until the crossbar is seen (max distance)
