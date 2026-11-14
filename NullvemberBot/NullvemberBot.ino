@@ -31,6 +31,21 @@
  *   dim cyan = idle   green = wall following   blue = spinning
  *   purple = U-turn   yellow = sweep search    white = line following
  *   flashing green = finished   red = stopped/failed   orange = calibration
+ *
+ *   While WALL FOLLOWING (modes 1, 2 and 8) the LEDs instead show each
+ *   steering decision:
+ *     blue = nudge left (too close)   yellow = nudge right (too far)
+ *     green = straight (in band)      off = no wall seen (null reading)
+ *
+ * CHANGE LOG
+ *   2026-11-14  Wall-following LED feedback. wallStep() now returns its
+ *               decision (WS_LEFT / WS_RIGHT / WS_STRAIGHT / WS_NULL) and the
+ *               new showWallAction() sets the LEDs from it. Used in
+ *               wallFollowUntilLine() and calWallFollow(). The U-turn's
+ *               forward stretches still show purple.
+ *   2026-11-14  Sweep search biased left. New SWEEP_LEFT_BIAS_PCT (130):
+ *               left half-swings last 130% as long as right ones, so the
+ *               zig-zag reaches further left. 100 = even sweep.
  */
 
 #include <MeMCore.h>
@@ -40,7 +55,7 @@
 // =====================================================================
 MeDCMotor          motorL(M1);
 MeDCMotor          motorR(M2);
-MeUltrasonicSensor ultra(PORT_3);       // mounted facing RIGHT
+MeUltrasonicSensor ultra(PORT_1);       // mounted facing RIGHT
 MeLineFollower     lineSensor(PORT_2);
 MeRGBLed           led(0, 30);
 MeBuzzer           buzzer;
@@ -64,8 +79,8 @@ const uint8_t       LED_BRIGHTNESS    = 40;   // 0-255
 
 // ---- Wall following (right wall, nudge steering) -------------------------
 const float WALL_TARGET_CM    = 12.0;  // desired distance to the right wall
-const float WALL_TOLERANCE_CM = 2.0;   // dead-band either side of the target
-const float WALL_NULL_CM      = 25.0;  // further than this = null reading, drive straight
+const float WALL_TOLERANCE_CM = 1.0;   // dead-band either side of the target
+const float WALL_NULL_CM      = 100.0;  // further than this = null reading, drive straight
 const int   BASE_SPEED        = 150;   // cruising PWM (0-255)          calibrate
 const int   NUDGE             = 50;    // PWM taken off one wheel to steer  calibrate
 
@@ -75,19 +90,19 @@ const unsigned long LINE_CLEAR_MS    = 100; // white needed after an action befo
 
 // ---- Line #1: three clockwise 360° spins (timed only) ----------------------
 const int           SPIN_SPEED  = 150;  // PWM during spin                  calibrate
-const unsigned long SPIN_360_MS = 1800; // time for ONE 360° at SPIN_SPEED  calibrate (mode 4)
+const unsigned long SPIN_360_MS = 1840; // time for ONE 360° at SPIN_SPEED  calibrate (mode 4)
 const int           SPIN_COUNT  = 3;
 const unsigned long SPIN_TOTAL_OVERRIDE_MS = 0; // >0 = use this total instead of 360 x 3
 
 // ---- Turns ------------------------------------------------------------------
 const int           TURN_SPEED = 120;   // PWM for 90° pivots               calibrate
-const unsigned long TURN90_MS  = 550;   // time for a 90° left pivot        calibrate (mode 5)
+const unsigned long TURN90_MS  = 610;   // time for a 90° left pivot        calibrate (mode 5)
 
 // ---- U-turn: F1 -> L90 -> F2 -> L90 -> F3 -------------------------------------
 const int   UT_SPEED       = 150;   // PWM for the forward stretches
-const float MS_PER_CM      = 200.0;  // ms to travel 1 cm at UT_SPEED      calibrate (mode 6)
-const float UT_FWD1_CM     = 30.0;  // past the end of the divider (nudge off corridor A wall @15 cm)
-const float UT_FWD2_CM     = 35.0;  // across the gap (nudge: hold starting distance)
+const float MS_PER_CM      = 50.0;  // ms to travel 1 cm at UT_SPEED      calibrate (mode 6)
+const float UT_FWD1_CM     = 34.0;  // past the end of the divider (nudge off corridor A wall @15 cm)
+const float UT_FWD2_CM     = 26.0;  // across the gap (nudge: hold starting distance)
 const float UT_FWD3_MAX_CM = 30.0;  // up corridor B until the crossbar is seen (max distance)
 
 // ---- Crossbar / sweep search -------------------------------------------------
@@ -98,12 +113,13 @@ const int           SWEEP_INNER_SPEED = 0;    // inner wheel PWM while sweeping 
 const unsigned long SWEEP_STEP_MS     = 250;  // first half-swing                    calibrate
 const unsigned long SWEEP_GROW_MS     = 150;  // each half-swing grows by this       calibrate
 const unsigned long SWEEP_MAX_MS      = 700;  // widest half-swing (~10 cm reach)    calibrate
+const unsigned long SWEEP_LEFT_BIAS_PCT = 130; // left swings are this % of right swings (100 = even)
 const unsigned long SWEEP_CREEP_MS    = 200;  // forward creep between swings        calibrate
 const unsigned long SWEEP_ARM_MS      = 80;   // white needed before a line counts
 const unsigned long SWEEP_TIMEOUT_MS  = 8000; // give up -> stop (red) -> use a reset
 const int           SIDE_LEFT  = -1;
 const int           SIDE_RIGHT = +1;
-const int           SWEEP_FIRST_DIR   = SIDE_RIGHT;
+const int           SWEEP_FIRST_DIR   = SIDE_LEFT;
 
 // ---- Line following ------------------------------------------------------------
 const int           LF_SPEED         = 120; // both sensors on black         calibrate
@@ -217,19 +233,41 @@ bool lineDetectedDebounced() {
 //  BEHAVIOURS
 // =====================================================================
 
-// One step of right-wall nudge steering.
+// What wallStep decided.
+const int WS_NULL = 0, WS_LEFT = 1, WS_RIGHT = 2, WS_STRAIGHT = 3;
+
+// One step of right-wall nudge steering. Returns what it decided.
 // targetCm < 0 means "no wall to hold": drive straight.
-void wallStep(float targetCm, int speed) {
+int wallStep(float targetCm, int speed) {
   float d = readDistance();
   if (targetCm < 0 || !isValidWall(d)) {
     setMotors(speed, speed);                       // null reading -> straight
+    return WS_NULL;
   } else if (d < targetCm - WALL_TOLERANCE_CM) {
     setMotors(speed - NUDGE, speed);               // too close -> nudge left
+    return WS_LEFT;
   } else if (d > targetCm + WALL_TOLERANCE_CM) {
     setMotors(speed, speed - NUDGE);               // too far  -> nudge right
+    return WS_RIGHT;
   } else {
     setMotors(speed, speed);                       // in band  -> straight
+    return WS_STRAIGHT;
   }
+}
+
+// LED feedback for wall following:
+//   blue = nudge left, yellow = nudge right, green = straight, off = no wall seen.
+// Only updates the LEDs when the decision changes (keeps the loop fast).
+// Pass -1 to reset (forces the next call to update).
+void showWallAction(int a) {
+  static int shown = -1;
+  if (a < 0) { shown = -1; return; }
+  if (a == shown) return;
+  shown = a;
+  if (a == WS_LEFT)          setLed(0, 0, LED_BRIGHTNESS);
+  else if (a == WS_RIGHT)    setLed(LED_BRIGHTNESS, LED_BRIGHTNESS * 3 / 4, 0);
+  else if (a == WS_STRAIGHT) setLed(0, LED_BRIGHTNESS, 0);
+  else                       setLed(0, 0, 0);
 }
 
 // Read the wall now and use it as the target ("hold starting distance").
@@ -248,10 +286,11 @@ bool wallFollowUntilLine(unsigned long ignoreMs) {
   bool armed = false, whiteTiming = false;
   unsigned long whiteSince = 0;
   resetDebounce();
+  showWallAction(-1);
 
   while (true) {
     if (checkAbort()) return false;
-    wallStep(WALL_TARGET_CM, BASE_SPEED);
+    showWallAction(wallStep(WALL_TARGET_CM, BASE_SPEED));
 
     if (millis() - t0 < ignoreMs) continue;        // start-arrow ignore window
 
@@ -357,8 +396,10 @@ int sweepMove(int left, int right, unsigned long ms, int &foundSide) {
   return 0;
 }
 
-// Zig-zag search with widening swings.
+// Zig-zag search with widening swings, biased to the left.
 // Each cycle: swing back to centre, creep straight, swing out to the other side.
+// Left swings last SWEEP_LEFT_BIAS_PCT % as long as right swings, so the robot
+// searches further to the left (a left swing may exceed SWEEP_MAX_MS by that %).
 // Returns 1 = found, -1 = aborted, -2 = timed out.
 int sweepSearch(int &foundSide) {
   showState(F("SWEEP_SEARCH"), LED_BRIGHTNESS, LED_BRIGHTNESS * 3 / 4, 0);
@@ -367,27 +408,28 @@ int sweepSearch(int &foundSide) {
   swWhiteTiming = false;
 
   int dir = SWEEP_FIRST_DIR;
-  unsigned long prevHalf = 0;
-  unsigned long half = SWEEP_STEP_MS;
+  unsigned long prevOut = 0;              // how long the last outward swing took
+  unsigned long base = SWEEP_STEP_MS;     // un-biased half-swing, grows each cycle
 
   while (true) {
     int outer = SWEEP_SPEED, inner = SWEEP_INNER_SPEED;
     int l = (dir == SIDE_RIGHT) ? outer : inner;
     int r = (dir == SIDE_RIGHT) ? inner : outer;
+    unsigned long out = (dir == SIDE_LEFT) ? base * SWEEP_LEFT_BIAS_PCT / 100 : base;
     foundSide = dir;
     int res;
 
-    if (prevHalf > 0) {                                     // back to centre
-      res = sweepMove(l, r, prevHalf, foundSide);
+    if (prevOut > 0) {                                      // back to centre
+      res = sweepMove(l, r, prevOut, foundSide);
       if (res != 0) return res;
     }
     res = sweepMove(SWEEP_SPEED, SWEEP_SPEED, SWEEP_CREEP_MS, foundSide); // creep forward
     if (res != 0) return res;
-    res = sweepMove(l, r, half, foundSide);                 // out to this side
+    res = sweepMove(l, r, out, foundSide);                  // out to this side
     if (res != 0) return res;
 
-    prevHalf = half;
-    half = min(half + SWEEP_GROW_MS, SWEEP_MAX_MS);
+    prevOut = out;
+    base = min(base + SWEEP_GROW_MS, SWEEP_MAX_MS);
     dir = -dir;
   }
 }
@@ -545,8 +587,10 @@ void calSensors() {
 
 void calWallFollow() {
   Serial.println(F("CAL: wall-follow only (press button to stop)."));
+  Serial.println(F("     LEDs: blue = nudge left, yellow = nudge right, green = straight, off = no wall."));
   showState(F("CAL_WALL"), 0, LED_BRIGHTNESS, 0);
-  while (!checkAbort()) wallStep(WALL_TARGET_CM, BASE_SPEED);
+  showWallAction(-1);
+  while (!checkAbort()) showWallAction(wallStep(WALL_TARGET_CM, BASE_SPEED));
 }
 
 void calLineFollow() {

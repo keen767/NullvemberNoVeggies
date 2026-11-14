@@ -56,20 +56,21 @@ Rule constraint: nothing that isn't organiser-supplied may be on the robot durin
 |---|---|
 | `d` < 15 − tol | too close, nudge **left** |
 | 15 − tol ≤ `d` ≤ 15 + tol | **straight** |
-| 15 + tol < `d` ≤ 25 | too far, nudge **right** |
-| `d` > 25, or `d` = 0 (no echo) | **null reading, drive straight** |
+| target + tol < `d` ≤ 35 | too far, nudge **right** |
+| `d` > 35, or no echo | **null reading, drive straight** |
 
 | Constant | Meaning | Value |
 |---|---|---|
 | `WALL_TARGET_CM` | desired distance to right wall | 15 |
 | `WALL_TOLERANCE_CM` | dead-band | 2 (adjustable) |
-| `WALL_NULL_CM` | beyond this = null reading, drive straight | 25 |
+| `WALL_NULL_CM` | beyond this = null reading, drive straight | 35 |
 | `BASE_SPEED` | cruising PWM (0–255) | calibrate |
 | `NUDGE` | speed taken off one wheel to steer | calibrate |
 
 ### 5.2 Line #1: three clockwise 360° spins (timed only)
 - Stop, then **spin in place clockwise** (left wheel forward, right wheel backward) as **one continuous timed spin** of 1080°.
-- Exact final heading depends on calibrating `SPIN_TOTAL_MS` on the real floor. Wall following corrects small leftover errors.
+- Exact final heading depends on calibrating `SPIN_360_MS` on the real floor (mode 4). Wall following corrects small leftover errors.
+- An ultrasonic square-up after the spin was tried and left out (decision 2026-11-14).
 - Then clear the line (drive until both sensors read white) and resume wall following.
 
 | Constant | Meaning | Value |
@@ -110,7 +111,8 @@ Rule constraint: nothing that isn't organiser-supplied may be on the robot durin
 | `SWEEP_MAX_MS` | widest swing allowed | calibrate |
 | `SWEEP_CREEP_MS` | forward creep between swings | calibrate |
 | `SWEEP_ARM_MS` | white time needed before a line counts | calibrate |
-| `SWEEP_FIRST_DIR` | side to try first | right (adjustable) |
+| `SWEEP_FIRST_DIR` | side to try first | left (adjustable) |
+| `SWEEP_LEFT_BIAS_PCT` | left swings as % of right swings (100 = even) | 130 |
 | `CROSSBAR_CLEAR_MS` | longest time to cross 2 cm tape | calibrate |
 | `SWEEP_TIMEOUT_MS` | give up and stop | TBD (suggest 8000) |
 
@@ -152,7 +154,7 @@ Rule constraint: nothing that isn't organiser-supplied may be on the robot durin
 - Declare challenge choices before each run. Declare LLM-generated code before scoring.
 
 ## 9. Resolved decisions (latest round)
-- U-turn F2 and F3 nudge targets: **hold the distance read at the start of the stretch** (null if > 25 cm).
+- U-turn F2 and F3 nudge targets: **hold the distance read at the start of the stretch** (null if > 35 cm).
 - Stem of the T: **~10 cm from corridor B's outer wall**, so the zig-zag should reach ~10 cm either side (`SWEEP_MAX_MS`).
 - LEDs + beep per stage: **yes**. Colours: dim cyan idle, green wall, blue spin, purple U-turn, yellow sweep, white line follow, flashing green finished, red stopped.
 - Emergency stop: pressing the button during a run stops the robot (touching it is a reset under the rules anyway).
